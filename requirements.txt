@@ -1,0 +1,44 @@
+# Dependencias principales para análisis de datos
+numpy==1.24.3
+pandas==2.0.3
+matplotlib==3.7.2
+seaborn==0.12.2
+
+# Series temporales y estadísticas
+statsmodels==0.14.0
+scikit-learn==1.3.0
+
+# Deep learning
+tensorflow==2.13.0
+keras==2.13.1
+
+# Servidor web y API
+flask==2.3.3
+gunicorn==21.2.0
+Werkzeug==2.3.7
+flask-cors==4.0.0
+
+# Herramientas de desarrollo
+pytest==7.4.0
+black==23.7.0
+flake8==6.1.0
+isort==5.12.0
+mypy==1.5.1
+python-dotenv==1.0.0
+
+# Utilidades
+joblib==1.3.2
+tqdm==4.66.1
+pillow==10.0.0
+requests==2.31.0
+
+# Manejo de archivos
+openpyxl==3.1.2
+xlrd==2.0.1
+python-dateutil==2.8.2
+
+# XGBoost
+xgboost==1.7.5
+
+# Optuna
+optuna==3.1.0
