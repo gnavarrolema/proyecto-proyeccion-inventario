@@ -1,0 +1,28 @@
+{
+  "name": "proyecto_proyeccion_inventario",
+  "version": "1.0.0",
+  "description": "",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "build": "npx tailwindcss -i ./app/static/src/css/input.css -o ./app/static/dist/css/output.css",
+    "watch": "npx tailwindcss -i ./app/static/src/css/input.css -o ./app/static/dist/css/output.css --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gnavarrolema/proyecto_proyeccion_inventario.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/gnavarrolema/proyecto_proyeccion_inventario/issues"
+  },
+  "homepage": "https://github.com/gnavarrolema/proyecto_proyeccion_inventario#readme",
+  "devDependencies": {
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.31",
+    "tailwindcss": "^3.4.0"
+  }
+}
