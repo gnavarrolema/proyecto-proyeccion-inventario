@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import unicodedata
 
 from app.config import MODELS_DIR, RESULTS_DIR
 from app.models.gru_model import GRUModel
@@ -61,6 +62,7 @@ class Forecaster:
             "jul": "07",
             "ago": "08",
             "sept": "09",
+            "sep": "09",
             "oct": "10",
             "nov": "11",
             "dic": "12",
@@ -76,10 +78,10 @@ class Forecaster:
 
     def load_data(self, file_path):
         """
-        Carga y preprocesa datos desde un archivo CSV.
+        Carga y preprocesa datos desde un archivo CSV o Excel.
 
         Args:
-            file_path: Ruta al archivo CSV
+            file_path: Ruta al archivo CSV/XLSX/XLS
 
         Returns:
             pd.DataFrame: Datos procesados
@@ -90,9 +92,60 @@ class Forecaster:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"No se encuentra el archivo: {file_path}")
 
-        # CAMBIO IMPORTANTE: Cargar datos con formato español/latino
-        # Usar decimal=',' y thousands='.' para interpretar correctamente los números
-        raw_data = pd.read_csv(file_path, sep=";", decimal=",", thousands=".")
+        # Detectar extensión y leer en consecuencia
+        from pathlib import Path as _Path
+
+        ext = _Path(file_path).suffix.lower()
+        if ext in {".xlsx", ".xls"}:
+            raw_data = pd.read_excel(file_path)
+        else:
+            # CSV con formato español/latino: decimal=',' y thousands='.'
+            raw_data = pd.read_csv(file_path, sep=";", decimal=",", thousands=".")
+
+        # Normalizar nombres de columnas para manejar variantes comunes
+        def _strip_accents(s):
+            if not isinstance(s, str):
+                return s
+            return "".join(
+                c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+            )
+
+        def _normalize_colname(s):
+            s0 = _strip_accents(str(s)).strip().lower()
+            s0 = s0.replace(" ", "")
+            s0 = s0.replace("_", "")
+            s0 = s0.replace("&", "y")
+            return s0
+
+        canonical_map = {
+            # Fecha / Mes&Año
+            "mesyano": "Mes&Año",
+            "mesano": "Mes&Año",
+            "mesyaño": "Mes&Año",
+            "fecha": "Fecha",
+            # Artículo
+            "articulo": "ARTÍCULO",
+            "articulo": "ARTÍCULO",
+            "articulos": "ARTÍCULO",
+            "producto": "ARTÍCULO",
+            # Centro de costo
+            "centrodecosto": "CENTRO DE COSTO",
+            # Cantidades
+            "cantidad": "CANTIDADES",
+            "cantidades": "CANTIDADES",
+            "unidades": "CANTIDADES",
+            # Producción
+            "produccion": "PRODUCCIÓN",
+            "producciones": "PRODUCCIÓN",
+        }
+
+        rename_dict = {}
+        for col in list(raw_data.columns):
+            key = _normalize_colname(col)
+            if key in canonical_map:
+                rename_dict[col] = canonical_map[key]
+        if rename_dict:
+            raw_data = raw_data.rename(columns=rename_dict)
 
         # Verificar que cargamos correctamente los datos
         try:
@@ -115,12 +168,45 @@ class Forecaster:
 
         # Procesar fechas si es necesario
         if "Mes&Año" in self.data.columns:
-            self.data["fecha_std"] = self.data["Mes&Año"].apply(
-                self._convert_date_format
-            )
+            col = self.data["Mes&Año"]
+            try:
+                import pandas as _pd
+                if _pd.api.types.is_datetime64_any_dtype(col):
+                    parsed = _pd.to_datetime(col, errors="coerce")
+                    self.data["fecha_std"] = parsed.dt.to_period("M").dt.to_timestamp()
+                else:
+                    # Si viene como string tipo 'ene-22'
+                    self.data["fecha_std"] = col.apply(self._convert_date_format)
+            except Exception:
+                # Fallback robusto
+                self.data["fecha_std"] = _pd.to_datetime(col, errors="coerce").dt.to_period("M").dt.to_timestamp()
+        elif "Fecha" in self.data.columns:
+            # Intentar parsear directamente y ajustar al inicio de mes
+            parsed = pd.to_datetime(self.data["Fecha"], errors="coerce", dayfirst=True)
+            # Normalizar al primer día del mes
+            self.data["fecha_std"] = parsed.dt.to_period("M").dt.to_timestamp()
 
-        # Extraer lista de artículos únicos
-        self.articles = self.data["ARTÍCULO"].unique()
+        # Asegurar columnas numéricas limpias si existen
+        for num_col in ["CANTIDADES", "PRODUCCIÓN"]:
+            if num_col in self.data.columns and self.data[num_col].dtype == object:
+                cleaned = (
+                    self.data[num_col]
+                    .astype(str)
+                    .str.replace(".", "", regex=False)
+                    .str.replace(",", ".", regex=False)
+                )
+                self.data[num_col] = pd.to_numeric(cleaned, errors="coerce")
+
+        # Extraer lista de artículos únicos si la columna existe
+        if "ARTÍCULO" in self.data.columns:
+            self.articles = self.data["ARTÍCULO"].dropna().astype(str).unique()
+        else:
+            # Fallback: intentar columnas alternativas conocidas
+            alt_cols = [c for c in self.data.columns if "ART" in _strip_accents(c).upper()]
+            if alt_cols:
+                self.articles = self.data[alt_cols[0]].dropna().astype(str).unique()
+            else:
+                self.articles = []
 
         logger.info(
             f"Datos cargados: {len(self.data)} registros, {len(self.articles)} artículos"
