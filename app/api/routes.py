@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 def allowed_file(filename):
-    """Verifica si el archivo tiene una extensión permitida."""
-    return "." in filename and filename.rsplit(".", 1)[1].lower() == "csv"
+    """Verifica si el archivo tiene una extensión permitida (CSV o Excel)."""
+    allowed = current_app.config.get("ALLOWED_EXTENSIONS", {"csv"})
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed
 
 
 @api_bp.route("/")
@@ -41,7 +42,7 @@ def index():
 
 @api_bp.route("/api/load-data", methods=["POST"])
 def load_data():
-    """Carga y procesa el archivo CSV de datos."""
+    """Carga y procesa un archivo de datos (CSV o Excel)."""
     try:
         if "file" not in request.files:
             return jsonify(

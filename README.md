@@ -76,6 +76,14 @@ python run.py
 
 Una vez que la aplicación se esté ejecutando, abre tu navegador web y ve a `http://127.0.0.1:5000` para acceder a la interfaz de usuario.
 
+## Carga de Datos (CSV o Excel)
+
+La aplicación soporta archivos de datos en formato `.csv`, `.xlsx` y `.xls`:
+- Para CSV: use separador `;`, decimal `,` y miles `.` si su archivo sigue formato regional ES/LA.
+- Para Excel: basta con subir el archivo; se detecta y carga automáticamente.
+
+Las columnas esperadas incluyen al menos: `Mes&Año`, `ARTÍCULO`, `CANTIDADES`, `PRODUCCIÓN`.
+
 ## Estructura del Proyecto
 
 ```

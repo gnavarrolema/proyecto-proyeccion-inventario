@@ -48,7 +48,7 @@ class Config:
     # Configuración de carga de archivos
     UPLOAD_FOLDER = DATA_DIR
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB máximo
-    ALLOWED_EXTENSIONS = {"csv"}
+    ALLOWED_EXTENSIONS = {"csv", "xlsx", "xls"}
 
     # Configuración de depuración
     DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
