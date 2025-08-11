@@ -5,7 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proyección de Inventario</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='dist/css/output.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" onload="console.log('jsPDF cargado exitosamente')" onerror="console.error('Error cargando jsPDF')"></script>
+    <script>
+        // Verificar cuando todas las librerías estén cargadas
+        window.addEventListener('load', function() {
+            console.log('Página completamente cargada');
+            console.log('Chart disponible:', typeof Chart !== 'undefined');
+            console.log('jsPDF disponible:', typeof window.jsPDF !== 'undefined');
+            if (typeof window.jsPDF !== 'undefined') {
+                console.log('jsPDF objeto:', window.jsPDF);
+            }
+        });
+    </script>
     <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </head>
 <body class="bg-gray-50">
@@ -278,9 +290,14 @@
                 <div class="bg-white rounded-lg shadow-md h-full">
                     <div class="bg-indigo-600 px-6 py-4 rounded-t-lg flex justify-between items-center">
                         <h5 class="text-white font-medium mb-0">Gráfico de Pronóstico</h5>
-                        <button id="download-chart" class="text-white hover:bg-indigo-700 rounded-md px-2 py-1 flex items-center text-sm">
-                            <i class="fas fa-download mr-1"></i> Descargar
-                        </button>
+                        <div class="flex space-x-2">
+                            <button id="download-chart" class="text-white hover:bg-indigo-700 rounded-md px-2 py-1 flex items-center text-sm">
+                                <i class="fas fa-download mr-1"></i> Gráfico
+                            </button>
+                            <button id="download-pdf-analysis" class="text-white hover:bg-indigo-700 rounded-md px-2 py-1 flex items-center text-sm">
+                                <i class="fas fa-file-pdf mr-1"></i> PDF Completo
+                            </button>
+                        </div>
                     </div>
                     <div class="p-6">
                         <div class="relative h-[350px]" id="forecasting-chart">

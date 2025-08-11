@@ -1187,6 +1187,7 @@ def calculate_all_safety_stocks():
         for article, result in results.items():
             formatted_result = {
                 "safety_stock": result.get("safety_stock", 0),
+                "reorder_point": result.get("reorder_point", 0),
                 "leadtime_days": result.get("leadtime_days", 0),
                 "service_level": result.get("service_level", 0),
                 "method": result.get("method", ""),
@@ -1212,4 +1213,114 @@ def calculate_all_safety_stocks():
         logger.error(
             f"Error al calcular stock de seguridad para todos los artículos: {str(e)}"
         )
+        return jsonify({"success": False, "error": str(e)})
+
+
+# Ruta para exportar resultados de stock de seguridad
+@api_bp.route("/api/export-safety-stock", methods=["POST"])
+def export_safety_stock():
+    """Exporta los resultados de stock de seguridad a un archivo CSV."""
+    try:
+        if forecaster.articles is None:
+            return jsonify(
+                {"success": False, "error": "No se han cargado datos"}
+            )
+
+        # Obtener parámetros del cuerpo de la solicitud
+        data = request.json
+        target = data.get("target", "CANTIDADES")
+        method = data.get("method", "basic")
+        service_level = data.get("service_level", 0.95)
+
+        logger.info(
+            f"Exportando resultados de stock de seguridad con parámetros: target={target}, method={method}, service_level={service_level}"
+        )
+
+        # Calcular stock de seguridad para todos los artículos
+        results = forecaster.calculate_all_safety_stocks(
+            target, method, service_level
+        )
+
+        if not results:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "No se pudieron calcular los stocks de seguridad",
+                }
+            )
+
+        # Crear DataFrame para exportar
+        export_data = []
+        for article, result in results.items():
+            row = {
+                "Articulo": article,
+                "Stock_de_Seguridad": result.get("safety_stock", 0),
+                "Punto_de_Reorden": result.get("reorder_point", 0),
+                "Tiempo_de_Entrega_Dias": result.get("leadtime_days", 0),
+                "Nivel_de_Servicio": f"{result.get('service_level', 0)*100:.1f}%",
+                "Metodo": result.get("method", ""),
+                "Demanda_Promedio": result.get("avg_demand", 0),
+                "Desviacion_Estandar": result.get("std_dev", 0),
+                "Puntos_de_Datos": result.get("data_points", 0),
+            }
+
+            # Añadir información del modelo si está disponible
+            if "best_model" in result and result["best_model"]:
+                row["Modelo_Utilizado"] = result["best_model"].get("name", "N/A")
+                if "metrics" in result["best_model"]:
+                    metrics = result["best_model"]["metrics"]
+                    row["RMSE_Modelo"] = metrics.get("RMSE", "N/A")
+                    row["MAE_Modelo"] = metrics.get("MAE", "N/A")
+
+            export_data.append(row)
+
+        # Crear DataFrame
+        df = pd.DataFrame(export_data)
+
+        # Generar nombre de archivo con timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"stock_seguridad_{target}_{method}_{timestamp}.csv"
+        file_path = os.path.join(RESULTS_DIR, filename)
+
+        # Asegurar que el directorio existe
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+
+        # Guardar CSV
+        df.to_csv(file_path, index=False, encoding="utf-8")
+
+        logger.info(f"Archivo de export guardado en: {file_path}")
+
+        # Crear URL de descarga relativa
+        download_url = f"/api/download-safety-stock/{filename}"
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Resultados exportados: {len(export_data)} artículos",
+                "download_url": download_url,
+                "filename": filename,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error al exportar stock de seguridad: {str(e)}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+# Ruta para descargar archivo de stock de seguridad exportado
+@api_bp.route("/api/download-safety-stock/<filename>", methods=["GET"])
+def download_safety_stock(filename):
+    """Descarga un archivo de stock de seguridad exportado."""
+    try:
+        file_path = os.path.join(RESULTS_DIR, filename)
+        
+        if not os.path.exists(file_path):
+            return jsonify(
+                {"success": False, "error": "Archivo no encontrado"}
+            )
+
+        return send_file(file_path, as_attachment=True, download_name=filename)
+
+    except Exception as e:
+        logger.error(f"Error al descargar archivo: {str(e)}")
         return jsonify({"success": False, "error": str(e)})
