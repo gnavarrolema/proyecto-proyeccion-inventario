@@ -236,39 +236,74 @@ class GRUModel:
         """
         logger.info(f"Entrenando modelo GRU con {len(series)} puntos")
         try:
-            # --- INICIO DE LA CORRECCIÓN ROBUSTA ---
-
-            # 1. Dividir la serie para encontrar los datos de entrenamiento y ajustar el scaler
-            # Esto evita el data leakage, el scaler solo "aprende" de los datos de entrenamiento.
-            split_index = int(len(series) * (1 - validation_split))
-            train_values = series.values[:split_index].reshape(-1, 1)
+            # --- CORRECCIÓN PARA EVITAR DATA LEAKAGE ---
             
-            if len(train_values) == 0:
-                raise ValueError("No hay suficientes datos para el conjunto de entrenamiento después de la división.")
-
-            # 2. Ajustar el scaler SOLO con los datos de entrenamiento
-            self.scaler.fit(train_values)
-
-            # 3. Transformar la serie COMPLETA con el scaler ya ajustado
-            scaled_data = self.scaler.transform(series.values.reshape(-1, 1))
-
-            # 4. Crear secuencias a partir de TODOS los datos escalados
-            X, y = self._create_sequences(scaled_data)
-
-            if len(X) == 0:
-                raise ValueError(f"No se pudieron crear secuencias. La longitud de la serie ({len(series)}) podría ser menor que el lookback ({self.lookback}).")
-
+            # 1. Calcular índice de división respetando orden temporal
+            total_length = len(series)
+            
+            # Necesitamos suficientes datos para crear secuencias en ambos conjuntos
+            min_train_size = self.lookback + 10  # Al menos 10 secuencias para entrenar
+            split_index = max(min_train_size, int(total_length * (1 - validation_split)))
+            
+            if split_index >= total_length - 1:
+                # Si no hay suficientes datos para validación, usar validación de Keras internamente
+                logger.warning(f"Datos insuficientes para división manual en GRU, usando validación interna de Keras")
+                train_values = series.values.reshape(-1, 1)
+                
+                # Ajustar scaler SOLO con datos de entrenamiento
+                self.scaler.fit(train_values)
+                scaled_data = self.scaler.transform(train_values)
+                
+                # Crear secuencias
+                X, y = self._create_sequences(scaled_data)
+                
+                if len(X) == 0:
+                    raise ValueError(f"No se pudieron crear secuencias. Serie demasiado corta ({len(series)}) para lookback ({self.lookback}).")
+                
+                # Usar validación interna de Keras
+                use_manual_split = False
+            else:
+                # División manual temporal
+                train_series = series.iloc[:split_index]
+                val_series = series.iloc[split_index - self.lookback:]  # Incluir lookback para validación
+                
+                logger.info(f"División temporal GRU: entrenamiento={len(train_series)}, validación={len(val_series) - self.lookback}")
+                
+                # 2. Ajustar scaler SOLO con datos de entrenamiento
+                train_values = train_series.values.reshape(-1, 1)
+                self.scaler.fit(train_values)
+                
+                # 3. Transformar ambos conjuntos con el scaler ya ajustado
+                scaled_train = self.scaler.transform(train_values)
+                scaled_val = self.scaler.transform(val_series.values.reshape(-1, 1))
+                
+                # 4. Crear secuencias para entrenamiento y validación por separado
+                X_train, y_train = self._create_sequences(scaled_train)
+                X_val, y_val = self._create_sequences(scaled_val)
+                
+                if len(X_train) == 0 or len(X_val) == 0:
+                    raise ValueError(f"No se pudieron crear suficientes secuencias. Train: {len(X_train)}, Val: {len(X_val)}")
+                
+                # Combinar para el entrenamiento
+                X = np.concatenate([X_train, X_val])
+                y = np.concatenate([y_train, y_val])
+                
+                # Calcular índices para validación manual
+                train_samples = len(X_train)
+                use_manual_split = True
+            
             # Reshape para GRU
             X = X.reshape(X.shape[0], X.shape[1], 1)
-
-            # --- FIN DE LA CORRECCIÓN ROBUSTA ---
-
-            # Calcular factores estacionales aproximados (para uso en predicción)
-            self.seasonal_factors = self._get_monthly_seasonality(series)
-
-            # Analizar patrones cíclicos
-            self.pattern_info = self._analyze_patterns(series)
-
+            
+            # Calcular factores estacionales usando solo datos de entrenamiento
+            if use_manual_split:
+                self.seasonal_factors = self._get_monthly_seasonality(train_series)
+                # Analizar patrones cíclicos solo en datos de entrenamiento
+                self.pattern_info = self._analyze_patterns(train_series)
+            else:
+                self.seasonal_factors = self._get_monthly_seasonality(series)
+                self.pattern_info = self._analyze_patterns(series)
+            
             # Construir modelo
             self.model = self._build_model((X.shape[1], 1))
 
@@ -280,18 +315,31 @@ class GRUModel:
                 verbose=1,
             )
 
-            # Entrenar modelo
-            history = self.model.fit(
-                X,
-                y,
-                epochs=epochs,
-                batch_size=batch_size,
-                validation_split=validation_split, # Keras se encarga de la división en los datos ya procesados
-                callbacks=[early_stopping],
-                verbose=1,
-            )
+            # Entrenar modelo con división manual o automática
+            if use_manual_split:
+                # Usar división manual (sin data leakage)
+                history = self.model.fit(
+                    X[:train_samples],
+                    y[:train_samples],
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    validation_data=(X[train_samples:], y[train_samples:]),
+                    callbacks=[early_stopping],
+                    verbose=1,
+                )
+            else:
+                # Usar división automática de Keras (para conjuntos pequeños)
+                history = self.model.fit(
+                    X,
+                    y,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    validation_split=validation_split,
+                    callbacks=[early_stopping],
+                    verbose=1,
+                )
 
-            logger.info("Modelo GRU entrenado correctamente")
+            logger.info("Modelo GRU entrenado correctamente sin data leakage")
             return history
         except Exception as e:
             logger.error(f"Error en entrenamiento de GRU: {str(e)}")

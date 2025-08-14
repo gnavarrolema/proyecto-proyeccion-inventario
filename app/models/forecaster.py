@@ -9,6 +9,115 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import unicodedata
+from sklearn.model_selection import TimeSeriesSplit
+
+
+def create_temporal_split(series, validation_split=0.2, min_train_samples=10):
+    """
+    Crea una división temporal robusta para series temporales evitando data leakage.
+    
+    Args:
+        series: Serie temporal pandas
+        validation_split: Fracción para validación (0.0-1.0)
+        min_train_samples: Mínimo número de muestras para entrenamiento
+    
+    Returns:
+        tuple: (train_series, val_series, split_info)
+    """
+    total_length = len(series)
+    
+    # Para series muy pequeñas, usar división mínima
+    if total_length < 20:
+        train_size = max(min_train_samples, int(total_length * (1 - validation_split)))
+        if train_size >= total_length - 1:
+            train_size = total_length - 2
+        
+        train_series = series[:train_size]
+        val_series = series[train_size:]
+        
+        split_info = {
+            'method': 'simple',
+            'total_samples': total_length,
+            'train_samples': len(train_series),
+            'val_samples': len(val_series)
+        }
+        
+    else:
+        # Para series más largas, usar TimeSeriesSplit
+        tscv = TimeSeriesSplit(n_splits=min(3, total_length // 10))  # Máximo 3 splits
+        splits = list(tscv.split(series))
+        
+        if len(splits) > 0:
+            # Usar la última división (más datos para entrenamiento)
+            train_idx, val_idx = splits[-1]
+            train_series = series.iloc[train_idx]
+            val_series = series.iloc[val_idx]
+        else:
+            # Fallback a división simple
+            train_size = int(total_length * (1 - validation_split))
+            train_series = series[:train_size]
+            val_series = series[train_size:]
+        
+        split_info = {
+            'method': 'time_series_split',
+            'total_samples': total_length,
+            'train_samples': len(train_series),
+            'val_samples': len(val_series),
+            'n_splits': len(splits)
+        }
+    
+    return train_series, val_series, split_info
+
+
+def validate_temporal_integrity(train_series, val_series, forecast_dates=None):
+    """
+    Valida que no haya data leakage temporal en las divisiones de datos.
+    
+    Args:
+        train_series: Serie de entrenamiento
+        val_series: Serie de validación  
+        forecast_dates: Fechas de pronóstico (opcional)
+    
+    Returns:
+        dict: Resultado de la validación
+    """
+    validation_result = {
+        'is_valid': True,
+        'warnings': [],
+        'errors': []
+    }
+    
+    # Verificar que las fechas de entrenamiento sean anteriores a las de validación
+    if len(train_series) > 0 and len(val_series) > 0:
+        last_train_date = train_series.index[-1]
+        first_val_date = val_series.index[0]
+        
+        if last_train_date >= first_val_date:
+            validation_result['errors'].append(
+                f"Data leakage detectado: última fecha entrenamiento ({last_train_date}) >= primera fecha validación ({first_val_date})"
+            )
+            validation_result['is_valid'] = False
+    
+    # Verificar que las fechas de pronóstico sean posteriores a los datos
+    if forecast_dates is not None and len(val_series) > 0:
+        last_data_date = val_series.index[-1]
+        first_forecast_date = forecast_dates[0] if len(forecast_dates) > 0 else None
+        
+        if first_forecast_date and first_forecast_date <= last_data_date:
+            validation_result['warnings'].append(
+                f"Pronóstico para fecha pasada: primera fecha pronóstico ({first_forecast_date}) <= última fecha datos ({last_data_date})"
+            )
+    
+    # Verificar continuidad temporal
+    for name, series in [('entrenamiento', train_series), ('validación', val_series)]:
+        if len(series) > 1:
+            # Verificar que las fechas estén ordenadas
+            if not series.index.is_monotonic_increasing:
+                validation_result['warnings'].append(
+                    f"Fechas no ordenadas en conjunto de {name}"
+                )
+    
+    return validation_result
 
 from app.config import MODELS_DIR, RESULTS_DIR
 from app.models.gru_model import GRUModel
@@ -385,6 +494,14 @@ class Forecaster:
             logger.info(
                 f"Fechas futuras generadas: {[d.strftime('%Y-%m-%d') for d in future_dates]}"
             )
+            
+            # Validar integridad temporal
+            validation_result = validate_temporal_integrity(series, pd.Series(index=future_dates), future_dates)
+            if not validation_result['is_valid']:
+                for error in validation_result['errors']:
+                    logger.error(f"Error de integridad temporal: {error}")
+            for warning in validation_result['warnings']:
+                logger.warning(f"Advertencia temporal: {warning}")
 
             # Generar pronóstico según el tipo de modelo
             if model_type == "SARIMA":
@@ -404,8 +521,10 @@ class Forecaster:
 
             # Validar y ajustar pronósticos si existe el método
             if hasattr(self, "validate_forecast"):
+                # Obtener fecha de corte (fecha del último dato histórico)
+                train_cutoff = series.index[-1] if len(series) > 0 else None
                 validated_forecast = self.validate_forecast(
-                    forecast_series, series
+                    forecast_series, series, train_cutoff_date=train_cutoff
                 )
                 return validated_forecast
             else:
@@ -417,19 +536,20 @@ class Forecaster:
             )
             return pd.Series()
 
-    def validate_forecast(self, forecast, series):
+    def validate_forecast(self, forecast, series, train_cutoff_date=None):
         """
-        Valida que los pronósticos estén dentro de rangos razonables basados en datos recientes.
-        Ajusta cualquier pronóstico que esté fuera de los límites calculados.
-
-        Esta función considera:
-        - Estadísticas de los datos históricos recientes (media, desviación estándar, máximo)
-        - Calcula límites superior e inferior razonables
-        - Ajusta los valores anómalos manteniendo los pronósticos dentro de un rango realista
+        Valida que los pronósticos estén dentro de rangos razonables basados SOLO en datos históricos 
+        disponibles hasta la fecha de corte de entrenamiento.
+        
+        CORRECCIÓN PARA EVITAR DATA LEAKAGE:
+        - Solo usa estadísticas de datos que estarían disponibles en el momento de hacer la predicción
+        - Si se proporciona train_cutoff_date, solo usa datos hasta esa fecha
+        - Evita usar información del conjunto de validación/prueba
 
         Args:
             forecast (pd.Series): Serie de pandas con los pronósticos a validar
             series (pd.Series): Serie de pandas con los datos históricos de referencia
+            train_cutoff_date: Fecha límite de datos de entrenamiento (evita data leakage)
 
         Returns:
             pd.Series: Pronósticos validados/ajustados
@@ -441,19 +561,36 @@ class Forecaster:
                     "Serie histórica vacía, no es posible validar pronósticos"
                 )
                 return forecast
+            
+            # Verificar que tenemos datos hasta la fecha de corte
+            if train_cutoff_date is not None and len(recent_data) == 0:
+                logger.warning(
+                    f"No hay datos disponibles hasta la fecha de corte {train_cutoff_date}"
+                )
+                return forecast
 
             if forecast.empty:
                 logger.warning("No hay pronósticos para validar")
                 return forecast
 
+            # CORRECCIÓN: Usar solo datos hasta la fecha de corte de entrenamiento
+            if train_cutoff_date is not None:
+                # Filtrar datos solo hasta la fecha de corte
+                available_data = series[series.index <= train_cutoff_date]
+                logger.info(f"Usando datos hasta {train_cutoff_date} para validación ({len(available_data)} puntos)")
+            else:
+                # Si no hay fecha de corte, usar toda la serie (comportamiento anterior)
+                available_data = series
+                logger.warning("No se proporcionó fecha de corte - usando toda la serie (puede causar data leakage)")
+            
             # Usar datos recientes para calcular estadísticas (últimos 12 meses o todos si hay menos)
-            recent_data = series[-12:] if len(series) > 12 else series
+            recent_data = available_data[-12:] if len(available_data) > 12 else available_data
 
             # Imprimir estadísticas para diagnóstico
             logger.info(
                 f"Validando pronósticos basados en {len(recent_data)} datos históricos recientes"
             )
-            logger.info(f"Últimos valores: {series.tail(5).to_dict()}")
+            logger.info(f"Últimos valores disponibles para validación: {recent_data.tail(5).to_dict()}")
 
             # Calcular estadísticas
             recent_mean = recent_data.mean()
@@ -592,13 +729,10 @@ class Forecaster:
             )
             return {}
 
-        # Dividir en entrenamiento y prueba
-        train_size = int(len(series) * 0.8)
-        if train_size < 8:
-            train_size = len(series) - 1  # Dejar al menos un punto para prueba
-
-        train_series = series[:train_size]
-        test_series = series[train_size:]
+        # Dividir en entrenamiento y prueba usando método temporal estandarizado
+        train_series, test_series, split_info = create_temporal_split(series, validation_split=0.2, min_train_samples=8)
+        
+        logger.info(f"División temporal ({split_info['method']}): entrenamiento={split_info['train_samples']}, prueba={split_info['val_samples']}")
 
         results = {}
 
@@ -747,9 +881,12 @@ class Forecaster:
 
         return results
 
-    def validate_forecast(self, forecast, original_series):
+    def validate_forecast_deprecated(self, forecast, original_series):
         """
-        Valida que los pronósticos sean razonables comparados con datos históricos.
+        Método obsoleto - usar validate_forecast con train_cutoff_date para evitar data leakage.
+        
+        NOTA: Este método se mantiene por compatibilidad pero puede causar data leakage
+        ya que usa toda la serie histórica sin considerar fechas de corte.
 
         Args:
             forecast: Serie de pronósticos
@@ -758,11 +895,14 @@ class Forecaster:
         Returns:
             Series: Pronósticos validados/ajustados
         """
-        # Calcular estadísticas de los datos históricos
+        logger.warning("Usando método validate_forecast obsoleto que puede causar data leakage")
+        # Calcular estadísticas de los datos históricos (TODO: CORREGIR DATA LEAKAGE)
         hist_mean = original_series.mean()
         hist_std = original_series.std()
         hist_max = original_series.max()
         hist_min = original_series.min()
+        
+        logger.warning("ADVERTENCIA: Este método puede usar datos del futuro para validación")
 
         # Definir límites razonables
         upper_limit = max(hist_max * 1.5, hist_mean + 3 * hist_std)

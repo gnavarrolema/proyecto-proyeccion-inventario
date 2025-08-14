@@ -36,19 +36,30 @@ class XGBoostModel:
         self.model = None
         self.scaler = MinMaxScaler(feature_range=(0, 1))
 
-    def _prepare_features(self, series):
+    def _prepare_features(self, series, fit_scaler=True):
         """
         Prepara las características para el modelo.
+        
+        CORRECCIÓN: Separar ajuste del scaler de la transformación para evitar data leakage.
 
         Args:
             series: Serie temporal pandas
+            fit_scaler: Si debe ajustar el scaler (solo True para entrenamiento)
 
         Returns:
             tuple: X (características), y (target) y series escalada
         """
-        # Escalar los datos
+        # Escalar los datos - CORREGIDO para evitar data leakage
         values = series.values.reshape(-1, 1)
-        scaled_values = self.scaler.fit_transform(values).flatten()
+        
+        if fit_scaler:
+            # Solo ajustar el scaler durante el entrenamiento
+            scaled_values = self.scaler.fit_transform(values).flatten()
+            logger.debug("Scaler ajustado con datos de entrenamiento")
+        else:
+            # Solo transformar durante la predicción
+            scaled_values = self.scaler.transform(values).flatten()
+            logger.debug("Usando scaler previamente ajustado")
 
         # Crear características (usamos solo valores pasados como características)
         X, y = [], []
@@ -74,8 +85,8 @@ class XGBoostModel:
         logger.info(f"Entrenando modelo XGBoost con {len(series)} puntos")
 
         try:
-            # Preparar características
-            X, y, _ = self._prepare_features(series)
+            # Preparar características ajustando el scaler
+            X, y, _ = self._prepare_features(series, fit_scaler=True)
 
             if len(X) == 0:
                 logger.warning(
@@ -122,7 +133,7 @@ class XGBoostModel:
                 else recent_data.mean(),
             }
 
-            # Escalar datos
+            # Escalar datos usando scaler previamente ajustado
             values = series.values.reshape(-1, 1)
             scaled_values = self.scaler.transform(values).flatten()
 
