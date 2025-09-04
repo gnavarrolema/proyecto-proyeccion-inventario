@@ -235,7 +235,8 @@ def generate_forecast():
         # Obtener parámetros
         data = request.json
         article_id = data.get("article_id")
-        target = "CANTIDADES"  # Por defecto usar CANTIDADES como objetivo
+        # Usar target proporcionado por el cliente si existe
+        target = data.get("target", "CANTIDADES")
         steps = data.get("steps", 6)
         # Obtener modelos seleccionados (si se proporcionan)
         selected_models = data.get(
@@ -258,8 +259,9 @@ def generate_forecast():
         article = forecaster.articles[article_id]
 
         # Entrenar modelos y generar pronósticos
+        # Permitir filtrar qué modelos entrenar si el cliente lo solicita
         results = forecaster.train_all_models(
-            article, target=target, steps=steps
+            article, target=target, steps=steps, selected_models=selected_models
         )
 
         if not results:
@@ -270,22 +272,8 @@ def generate_forecast():
                 }
             )
 
-        # Filtrar resultados por modelos seleccionados si es necesario
-        if selected_models and isinstance(selected_models, list):
-            filtered_results = {
-                model: results[model]
-                for model in results
-                if model in selected_models
-            }
-            # Si filtramos pero no queda ningún modelo, usar todos
-            if not filtered_results:
-                logger.warning(
-                    f"No se encontraron modelos que coincidan con "
-                    f"{selected_models}, usando todos"
-                )
-                filtered_results = results
-        else:
-            filtered_results = results
+        # Ya entrenamos solo los modelos solicitados; si no se especificó, usar todos
+        filtered_results = results
 
         # Obtener mejor modelo entre los seleccionados
         best_model, best_score = None, float(
@@ -679,6 +667,12 @@ def optimize_xgboost_status(task_id):
     except Exception as e:
         logger.error(f"Error al obtener estado de optimización: {str(e)}")
         return jsonify({"success": False, "error": str(e)})
+
+
+@api_bp.route("/api/optimize-model-status/<task_id>", methods=["GET"])
+def optimize_model_status(task_id):
+    """Alias del estado de optimización para mantener consistencia con el frontend."""
+    return optimize_xgboost_status(task_id)
 
 
 @api_bp.route("/api/debug-forecast/<int:article_id>/<target>", methods=["GET"])

@@ -11,6 +11,8 @@ import pandas as pd
 import unicodedata
 from sklearn.model_selection import TimeSeriesSplit
 
+from app.config import MODELS_DIR, RESULTS_DIR, DEBUG_MODE
+
 
 def create_temporal_split(series, validation_split=0.2, min_train_samples=10):
     """
@@ -119,7 +121,6 @@ def validate_temporal_integrity(train_series, val_series, forecast_dates=None):
     
     return validation_result
 
-from app.config import MODELS_DIR, RESULTS_DIR
 from app.models.gru_model import GRUModel
 from app.models.lstm_model import LSTMModel
 from app.models.safety_stock import SafetyStockCalculator
@@ -416,10 +417,11 @@ class Forecaster:
                 model.fit(series)
             elif model_type == "LSTM":
                 model = LSTMModel(**params)
-                model.fit(series)
+                # Reducir epochs en modo debug para acelerar iteraciones
+                model.fit(series, epochs=10 if DEBUG_MODE else 100)
             elif model_type == "GRU":
                 model = GRUModel(**params)
-                model.fit(series)
+                model.fit(series, epochs=10 if DEBUG_MODE else 100)
             elif model_type == "XGBOOST":
                 # Parámetros simplificados para XGBoost
                 lookback = params.get("lookback", 12)
@@ -706,7 +708,12 @@ class Forecaster:
             return None, None
 
     def train_all_models(
-        self, article, target="CANTIDADES", steps=6, debug=False
+        self,
+        article,
+        target="CANTIDADES",
+        steps=6,
+        debug=False,
+        selected_models=None,
     ):
         """
         Entrena todos los modelos disponibles para un artículo.
@@ -736,8 +743,14 @@ class Forecaster:
 
         results = {}
 
+        # Normalizar lista de modelos seleccionados (si se proporcionó)
+        if selected_models is not None and isinstance(selected_models, list):
+            selected_models = [m.upper() for m in selected_models]
+        
         # Entrenar y evaluar SARIMA
         try:
+            if selected_models is not None and "SARIMA" not in selected_models:
+                raise RuntimeError("SKIP_MODEL")
             sarima_metrics, sarima_model = self.evaluate_model(
                 train_series, test_series, "SARIMA"
             )
@@ -756,11 +769,16 @@ class Forecaster:
 
                 # Guardar modelo para uso futuro
                 self.models[f"{article}_{target}_SARIMA"] = full_sarima_model
+        except RuntimeError as e:
+            if str(e) != "SKIP_MODEL":
+                logger.error(f"Error en proceso SARIMA: {str(e)}")
         except Exception as e:
             logger.error(f"Error en proceso SARIMA: {str(e)}")
 
         # Entrenar y evaluar LSTM
         try:
+            if selected_models is not None and "LSTM" not in selected_models:
+                raise RuntimeError("SKIP_MODEL")
             lstm_metrics, lstm_model = self.evaluate_model(
                 train_series, test_series, "LSTM"
             )
@@ -779,11 +797,16 @@ class Forecaster:
 
                 # Guardar modelo para uso futuro
                 self.models[f"{article}_{target}_LSTM"] = full_lstm_model
+        except RuntimeError as e:
+            if str(e) != "SKIP_MODEL":
+                logger.error(f"Error en proceso LSTM: {str(e)}")
         except Exception as e:
             logger.error(f"Error en proceso LSTM: {str(e)}")
 
         # Entrenar y evaluar GRU
         try:
+            if selected_models is not None and "GRU" not in selected_models:
+                raise RuntimeError("SKIP_MODEL")
             gru_metrics, gru_model = self.evaluate_model(
                 train_series, test_series, "GRU"
             )
@@ -802,10 +825,15 @@ class Forecaster:
 
                 # Guardar modelo para uso futuro
                 self.models[f"{article}_{target}_GRU"] = full_gru_model
+        except RuntimeError as e:
+            if str(e) != "SKIP_MODEL":
+                logger.error(f"Error en proceso GRU: {str(e)}")
         except Exception as e:
             logger.error(f"Error en proceso GRU: {str(e)}")
 
         try:
+            if selected_models is not None and "XGBOOST" not in selected_models:
+                raise RuntimeError("SKIP_MODEL")
             # Comprobar si tenemos datos suficientes
             if len(series) >= 12:
                 # Crear y entrenar modelo XGBoost directamente (sin evaluación)
@@ -873,6 +901,9 @@ class Forecaster:
                 logger.warning(
                     f"Datos insuficientes para entrenar XGBOOST para {article}"
                 )
+        except RuntimeError as e:
+            if str(e) != "SKIP_MODEL":
+                logger.error(f"Error en proceso XGBOOST: {str(e)}")
         except Exception as e:
             logger.error(f"Error en proceso XGBOOST: {str(e)}")
 
@@ -1645,77 +1676,87 @@ class Forecaster:
             if use_forecasts and method != "insufficient":
                 # Generar pronósticos usando el mejor modelo
                 try:
-                    # Entrenar todos los modelos y obtener el mejor
-                    logger.info(
-                        f"Generando pronósticos para calcular stock de seguridad de {article}"
-                    )
-                    results = self.train_all_models(
-                        article, target=target, steps=forecast_horizon
-                    )
-
-                    if results:
-                        # Obtener el mejor modelo
-                        best_model, forecast, metrics = self.get_best_model(
-                            article, target
+                    # Primero verificar si ya tenemos un modelo entrenado
+                    best_model, forecast, metrics = self.get_best_model(article, target)
+                    results = None
+                    
+                    # Solo entrenar si no hay modelo disponible
+                    if best_model is None:
+                        logger.info(
+                            f"Generando pronósticos para calcular stock de seguridad de {article}"
+                        )
+                        results = self.train_all_models(
+                            article, target=target, steps=forecast_horizon
+                        )
+                        
+                        if results:
+                            # Obtener el mejor modelo después del entrenamiento
+                            best_model, forecast, metrics = self.get_best_model(
+                                article, target
+                            )
+                    else:
+                        logger.info(
+                            f"Usando modelo previamente entrenado para {article}: {best_model}"
                         )
 
-                        if (
-                            best_model
-                            and forecast is not None
-                            and len(forecast) > 0
-                        ):
-                            # Guardar info del mejor modelo
-                            best_model_info = {
-                                "name": best_model,
-                                "metrics": metrics,
-                            }
+                    # Verificar si tenemos un modelo válido (ya sea existente o recién entrenado)
+                    if (
+                        best_model
+                        and forecast is not None
+                        and len(forecast) > 0
+                    ):
+                        # Guardar info del mejor modelo
+                        best_model_info = {
+                            "name": best_model,
+                            "metrics": metrics,
+                        }
 
-                            # Guardar los pronósticos
-                            forecasts = forecast.values
+                        # Guardar los pronósticos
+                        forecasts = forecast.values
 
-                            logger.info(
-                                f"Usando modelo {best_model} para calcular stock de seguridad"
+                        logger.info(
+                            f"Usando modelo {best_model} para calcular stock de seguridad"
+                        )
+
+                        # Usar método específico para pronósticos
+                        if method == "forecast" or method == "basic":
+                            # Obtener error de pronóstico como medida de variabilidad
+                            forecast_error = metrics.get(
+                                "RMSE", series.std()
                             )
 
-                            # Usar método específico para pronósticos
-                            if method == "forecast" or method == "basic":
-                                # Obtener error de pronóstico como medida de variabilidad
-                                forecast_error = metrics.get(
-                                    "RMSE", series.std()
+                            # Calcular stock de seguridad por mes
+                            safety_stocks = self.safety_stock_calculator.calculate_with_forecast(
+                                forecasts,
+                                forecast_error,
+                                leadtime_periods,
+                                service_level,
+                            )
+
+                            # Guardar stock de seguridad promedio y por mes
+                            safety_stock = sum(safety_stocks) / len(
+                                safety_stocks
+                            )
+                            safety_stocks_by_month = {}
+
+                            # Asociar cada stock de seguridad con su fecha
+                            for i, ss in enumerate(safety_stocks):
+                                date = forecast.index[i]
+                                date_str = (
+                                    date.strftime("%Y-%m-%d")
+                                    if hasattr(date, "strftime")
+                                    else str(date)
+                                )
+                                safety_stocks_by_month[date_str] = round(
+                                    ss, 2
                                 )
 
-                                # Calcular stock de seguridad por mes
-                                safety_stocks = self.safety_stock_calculator.calculate_with_forecast(
-                                    forecasts,
-                                    forecast_error,
-                                    leadtime_periods,
-                                    service_level,
-                                )
-
-                                # Guardar stock de seguridad promedio y por mes
-                                safety_stock = sum(safety_stocks) / len(
-                                    safety_stocks
-                                )
-                                safety_stocks_by_month = {}
-
-                                # Asociar cada stock de seguridad con su fecha
-                                for i, ss in enumerate(safety_stocks):
-                                    date = forecast.index[i]
-                                    date_str = (
-                                        date.strftime("%Y-%m-%d")
-                                        if hasattr(date, "strftime")
-                                        else str(date)
-                                    )
-                                    safety_stocks_by_month[date_str] = round(
-                                        ss, 2
-                                    )
-
-                                # Usar método de pronóstico
-                                method = "forecast"
-                            else:
-                                # Si el método no es 'forecast', seguimos con el flujo normal
-                                # pero incluimos los pronósticos en el resultado
-                                pass
+                            # Usar método de pronóstico
+                            method = "forecast"
+                        else:
+                            # Si el método no es 'forecast', seguimos con el flujo normal
+                            # pero incluimos los pronósticos en el resultado
+                            pass
                 except Exception as e:
                     logger.error(
                         f"Error al generar pronósticos para stock de seguridad: {str(e)}"
@@ -1835,7 +1876,7 @@ class Forecaster:
         method="basic",
         service_level=0.95,
         forecast_horizon=6,
-        use_forecasts=True,
+        use_forecasts=False,  # Cambiar a False por defecto para exportación masiva
     ):
         """
         Calcula el stock de seguridad para todos los artículos disponibles.
@@ -1845,7 +1886,7 @@ class Forecaster:
             method: Método de cálculo ('basic', 'leadtime_var', 'review', 'insufficient', 'forecast')
             service_level: Nivel de servicio deseado (0-1)
             forecast_horizon: Horizonte de pronóstico en meses
-            use_forecasts: Si se deben usar pronósticos para el cálculo
+            use_forecasts: Si se deben usar pronósticos para el cálculo (False por defecto para evitar reentrenamiento masivo)
 
         Returns:
             dict: Resultados del cálculo de stock de seguridad por artículo

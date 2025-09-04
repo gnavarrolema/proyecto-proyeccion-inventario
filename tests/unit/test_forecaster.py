@@ -210,6 +210,31 @@ class TestForecaster(unittest.TestCase):
              else:
                  print(f"Warning: Modelo {model_type} no está en los resultados.")
 
+    def test_train_only_selected_models(self):
+        """Entrena solo los modelos seleccionados y verifica las claves del resultado."""
+        # Datos más largos para robustez
+        self.forecaster.load_data(self.longer_test_file_path)
+        article_name = 'TEST ARTICLE'
+        steps_to_forecast = 2
+
+        # Seleccionar solo SARIMA y XGBOOST
+        selected = ['SARIMA', 'XGBOOST']
+        results = self.forecaster.train_all_models(
+            article_name, target='CANTIDADES', steps=steps_to_forecast, selected_models=selected
+        )
+
+        # Debe devolver solo las claves seleccionadas presentes
+        self.assertIsInstance(results, dict)
+        self.assertTrue(set(results.keys()).issubset(set(selected)))
+        # Si entrenó SARIMA, debe tener forecast en formato Serie
+        if 'SARIMA' in results:
+            self.assertIn('forecast', results['SARIMA'])
+            self.assertIsInstance(results['SARIMA']['forecast'], pd.Series)
+        # Si entrenó XGBOOST, idem
+        if 'XGBOOST' in results:
+            self.assertIn('forecast', results['XGBOOST'])
+            self.assertIsInstance(results['XGBOOST']['forecast'], pd.Series)
+
 
     def test_get_best_model(self):
         """Prueba la selección del mejor modelo."""
